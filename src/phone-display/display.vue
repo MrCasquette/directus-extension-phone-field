@@ -1,0 +1,53 @@
+<script setup lang="ts">
+import parsePhoneNumber from 'libphonenumber-js/max';
+import { computed } from 'vue';
+import { z } from 'zod';
+import { FLAG_FONT_FAMILY, flag } from '../shared/country';
+
+const FormatSchema = z.enum(['international', 'national']).catch('international');
+
+const props = defineProps<{
+	value: string | null;
+	// Option du display : configurée par l'admin, donc parsée.
+	format?: unknown;
+}>();
+
+const phone = computed(() => (props.value ? parsePhoneNumber(props.value) : undefined));
+
+const formatted = computed(() => {
+	if (!phone.value) return undefined;
+
+	return FormatSchema.parse(props.format) === 'national'
+		? phone.value.formatNational()
+		: phone.value.formatInternational();
+});
+</script>
+
+<template>
+	<value-null v-if="!value" />
+	<!-- @click.stop : dans un tableau, le clic ne doit pas ouvrir l'item. -->
+	<a v-else-if="phone && formatted" class="phone" :href="phone.getURI()" @click.stop>
+		<span v-if="phone.country" class="flag">{{ flag(phone.country) }}</span>
+		{{ formatted }}
+	</a>
+	<span v-else>{{ value }}</span>
+</template>
+
+<style scoped>
+.phone {
+	display: inline-flex;
+	gap: 6px;
+	align-items: center;
+	color: inherit;
+	text-decoration: none;
+}
+
+.phone:hover {
+	text-decoration: underline;
+}
+
+.flag {
+	font-family: v-bind('FLAG_FONT_FAMILY');
+	line-height: 1;
+}
+</style>
