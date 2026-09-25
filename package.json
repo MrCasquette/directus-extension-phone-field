@@ -4,6 +4,14 @@
 	"icon": "phone",
 	"version": "1.0.0",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MrCasquette/directus-extension-phone-field.git"
+	},
+	"homepage": "https://github.com/MrCasquette/directus-extension-phone-field#readme",
+	"bugs": {
+		"url": "https://github.com/MrCasquette/directus-extension-phone-field/issues"
+	},
 	"keywords": [
 		"directus",
 		"directus-extension",
@@ -49,12 +57,10 @@
 	"devDependencies": {
 		"@directus/extensions-sdk": "18.0.5",
 		"@directus/types": "^17.0.0",
-		"typescript": "^7.0.2"
-	},
-	"dependencies": {
 		"@directus/validation": "^3.0.5",
 		"country-flag-emoji-polyfill": "^0.1.10",
 		"libphonenumber-js": "^1.13.14",
+		"typescript": "^7.0.2",
 		"zod": "^4.6.5"
 	}
 }
