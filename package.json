@@ -3,6 +3,7 @@
 	"description": "Phone number field for Directus: country selector, as-you-type formatting, E.164 storage and server-side validation.",
 	"icon": "phone",
 	"version": "1.0.0",
+	"license": "MIT",
 	"keywords": [
 		"directus",
 		"directus-extension",
