@@ -6,8 +6,15 @@ const props = defineProps<{ active: boolean }>();
 
 const emit = defineEmits<{ close: [] }>();
 
+// Seuls les changements de largeur comptent : sur mobile, l'ouverture du clavier (recherche du menu) ne change que la hauteur.
+let width = window.innerWidth;
+
 function onResize() {
-	if (props.active) emit('close');
+	const widthChanged = window.innerWidth !== width;
+
+	width = window.innerWidth;
+
+	if (widthChanged && props.active) emit('close');
 }
 
 onMounted(() => window.addEventListener('resize', onResize));

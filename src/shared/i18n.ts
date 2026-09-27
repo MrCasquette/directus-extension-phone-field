@@ -4,6 +4,9 @@
 const en = {
 	defaultCountry: 'Default country',
 	preferredCountries: 'Preferred countries',
+	selectCountry: 'Select country',
+	invalidNumber: 'Invalid phone number',
+	call: 'Call',
 };
 
 type MessageKey = keyof typeof en;
@@ -13,6 +16,9 @@ const messages: Record<string, Record<MessageKey, string>> = {
 	fr: {
 		defaultCountry: 'Pays par défaut',
 		preferredCountries: 'Pays prioritaires',
+		selectCountry: 'Choisir le pays',
+		invalidNumber: 'Numéro de téléphone invalide',
+		call: 'Appeler le',
 	},
 };
 
@@ -22,8 +28,9 @@ export function currentLocale(): string {
 	return document.documentElement.lang || FALLBACK_LOCALE;
 }
 
-export function t(key: MessageKey): string {
-	const language = currentLocale().split('-')[0] ?? '';
+// `locale` : la locale réactive de vue-i18n dans un composant, <html lang> ailleurs (config d'interface).
+export function t(key: MessageKey, locale = currentLocale()): string {
+	const language = locale.split('-')[0] ?? '';
 
 	return (messages[language] ?? en)[key];
 }

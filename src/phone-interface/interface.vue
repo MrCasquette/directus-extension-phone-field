@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import parsePhoneNumber, {
-	AsYouType,
 	type CountryCode,
 	getCountryCallingCode,
 	getExampleNumber,
@@ -10,9 +9,13 @@ import examples from 'libphonenumber-js/mobile/examples';
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { z } from 'zod';
-import { countryOptions, FLAG_FONT_FAMILY, flag } from '../shared/country';
+import { countryName, countryOptions, FLAG_FONT_FAMILY, flag, polyfillFlags } from '../shared/country';
+import { t } from '../shared/i18n';
 import { CountryCodeSchema, toE164 } from '../shared/phone';
+import { findSignificant, isSignificant, positionAfter, sanitize, stepLeft, stepRight } from './caret';
 import CloseOnResize from './close-on-resize.vue';
+import { formatAsYouType } from './format';
+import { useEditHistory } from './use-edit-history';
 
 const props = withDefaults(
 	defineProps<{
@@ -28,19 +31,49 @@ const props = withDefaults(
 
 const emit = defineEmits<{ input: [value: string | null] }>();
 
+type Snapshot = { text: string; country: CountryCode | undefined; internationalCode: string | undefined; caret: number };
+type HistoryAction = 'undo' | 'redo';
+
+// Collage ou glisser-déposer : un numéro complet remplace la saisie au lieu de s'y ajouter.
+const DROP_INPUT_TYPES = ['insertFromPaste', 'insertFromDrop'];
+
 const { locale } = useI18n();
+
+polyfillFlags();
 
 const defaultCountry = computed(() => CountryCodeSchema.optional().catch(undefined).parse(props.defaultCountry));
 const preferredCountries = computed(() => z.array(CountryCodeSchema).catch([]).parse(props.preferredCountries));
 
+// Pays du sélecteur : sert à interpréter une saisie nationale.
 const country = ref<CountryCode>();
+// Indicatif d'une saisie internationale (+44…) : prime sur le pays pour l'affichage du sélecteur.
+const internationalCode = ref<string>();
 const text = ref('');
 const touched = ref(false);
 let lastEmitted: string | null | undefined;
+let lastCaret = 0;
+
+const history = useEditHistory<Snapshot>();
 
 watch(() => props.value, syncFromValue, { immediate: true });
 
-const callingCode = computed(() => (country.value ? getCountryCallingCode(country.value) : undefined));
+const countryCallingCode = computed(() => (country.value ? getCountryCallingCode(country.value) : undefined));
+
+const callingCode = computed(() => internationalCode.value ?? countryCallingCode.value);
+
+// Drapeau seulement s'il correspond à l'indicatif affiché (+800 non géographique, +44 incomplet : globe).
+const shownCountry = computed(() =>
+	internationalCode.value === undefined || internationalCode.value === countryCallingCode.value
+		? country.value
+		: undefined,
+);
+
+const countryLabel = computed(() => {
+	const selected = shownCountry.value ? countryName(shownCountry.value, locale.value) : undefined;
+	const code = callingCode.value ? ` (+${callingCode.value})` : '';
+
+	return `${t('selectCountry', locale.value)}${selected || code ? `: ${selected ?? ''}${code}` : ''}`;
+});
 
 const placeholder = computed(() => (country.value ? getExampleNumber(country.value, examples)?.formatNational() : undefined));
 
@@ -66,41 +99,181 @@ function syncFromValue(value: string | null) {
 
 	const phone = value ? parsePhoneNumber(value) : undefined;
 
+	// Valeur changée hors du champ (annulation du formulaire…) : l'historique ne s'applique plus.
+	history.clear();
+
 	country.value = phone?.country ?? defaultCountry.value;
+	internationalCode.value = phone && !phone.country ? phone.countryCallingCode : undefined;
 	text.value = phone ? (phone.country ? phone.formatNational() : phone.formatInternational()) : (value ?? '');
+	lastCaret = text.value.length;
 }
 
-function onInput(raw: string | number | null) {
-	const formatter = new AsYouType(country.value);
-
-	text.value = formatter.input(raw === null ? '' : String(raw));
-
-	// Saisie au format international (+44…) : le sélecteur suit le numéro.
-	const detected = formatter.getCountry();
-	if (detected) country.value = detected;
-
-	emitValue();
+function snapshot(): Snapshot {
+	return { text: text.value, country: country.value, internationalCode: internationalCode.value, caret: lastCaret };
 }
 
-// Refuse la frappe ou le collage qui dépasserait la longueur max du pays (les lettres sont déjà écartées par AsYouType).
+// Native `input` : v-input ne repatche pas le DOM quand la valeur formatée est inchangée (espace tapé), on l'écrit nous-mêmes.
+function onInput(event: Event) {
+	// Composition IME en cours : on laisse faire, `compositionend` rappelle ce handler.
+	if (event instanceof InputEvent && event.isComposing) return;
+	if (!(event.target instanceof HTMLInputElement)) return;
+
+	const { value, selectionStart } = event.target;
+
+	applyInput(event.target, value, sanitize(value.slice(0, selectionStart ?? value.length)).length);
+}
+
+// Filtre la frappe (espaces, lettres), gère l'effacement d'un séparateur, le collage et la longueur max du pays.
 function onBeforeInput(event: Event) {
 	if (!(event instanceof InputEvent) || !(event.target instanceof HTMLInputElement)) return;
+	// Composition IME : non annulable, `onInput` reformate à la fin.
+	if (!event.cancelable) return;
+
+	const input = event.target;
+
+	// Menu Édition > Annuler / Rétablir.
+	if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+		event.preventDefault();
+		travel(input, event.inputType === 'historyUndo' ? 'undo' : 'redo');
+		return;
+	}
+	const { value } = input;
+	const start = input.selectionStart ?? value.length;
+	const end = input.selectionEnd ?? value.length;
+
+	if (event.inputType === 'deleteContentBackward' && start === end && !isSignificant(value[start - 1])) {
+		event.preventDefault();
+
+		const previous = findSignificant(value, start - 1, -1);
+		if (previous === undefined) return;
+
+		applyInput(input, value.slice(0, previous) + value.slice(start), sanitize(value.slice(0, previous)).length);
+		return;
+	}
+
+	if (event.inputType === 'deleteContentForward' && start === end && !isSignificant(value[start])) {
+		event.preventDefault();
+
+		const next = findSignificant(value, start, 1);
+		if (next === undefined) return;
+
+		applyInput(input, value.slice(0, start) + value.slice(next + 1), sanitize(value.slice(0, start)).length);
+		return;
+	}
 
 	const inserted = event.data ?? event.dataTransfer?.getData('text/plain');
 	if (!inserted) return;
 
-	const { value, selectionStart, selectionEnd } = event.target;
-	const next = value.slice(0, selectionStart ?? value.length) + inserted + value.slice(selectionEnd ?? value.length);
+	const insertedDigits = sanitize(inserted);
+
+	if (insertedDigits === '') {
+		event.preventDefault();
+		return;
+	}
+
+	if (DROP_INPUT_TYPES.includes(event.inputType) && isCompleteNumber(inserted)) {
+		event.preventDefault();
+		applyInput(input, inserted, insertedDigits.length);
+		return;
+	}
+
+	const next = value.slice(0, start) + inserted + value.slice(end);
 
 	if (validatePhoneNumberLength(next, country.value) === 'TOO_LONG') event.preventDefault();
+}
+
+function isCompleteNumber(inserted: string): boolean {
+	return sanitize(inserted).startsWith('+') || toE164(inserted, country.value) !== undefined;
+}
+
+function applyInput(input: HTMLInputElement, raw: string, significantBeforeCaret: number) {
+	const digits = sanitize(raw);
+	const formatted = formatAsYouType(digits, country.value);
+	// Préfixe international réécrit (011 → +) : le caret suit le même chiffre.
+	const shift = formatted.digits.length - digits.length;
+	const caret = positionAfter(formatted.text, Math.max(0, significantBeforeCaret + shift));
+
+	if (formatted.text !== text.value) history.record(snapshot());
+
+	lastCaret = caret;
+	text.value = formatted.text;
+	input.value = formatted.text;
+
+	// Autofill de plusieurs champs : ne pas voler le focus.
+	if (document.activeElement === input) input.setSelectionRange(caret, caret);
+
+	// Saisie au format international (+44…) : le sélecteur suit le numéro.
+	if (formatted.country) country.value = formatted.country;
+	internationalCode.value = formatted.callingCode;
+
+	emitValue();
+}
+
+function onKeydown(event: KeyboardEvent) {
+	if (!(event.target instanceof HTMLInputElement)) return;
+
+	// Toujours intercepté, même sans rien à annuler : sinon le raccourci remonte au navigateur (Arc rouvre un onglet).
+	const action = historyAction(event);
+	if (action) {
+		event.preventDefault();
+		travel(event.target, action);
+		return;
+	}
+
+	if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+	if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+
+	const { value, selectionStart, selectionEnd } = event.target;
+	if (selectionStart === null || selectionStart !== selectionEnd) return;
+
+	event.preventDefault();
+
+	const caret = event.key === 'ArrowRight' ? stepRight(value, selectionStart) : stepLeft(value, selectionStart);
+	event.target.setSelectionRange(caret, caret);
+	lastCaret = caret;
+}
+
+// Cmd/Ctrl+Z annule ; Cmd/Ctrl+Shift+Z et Ctrl+Y rétablissent.
+function historyAction(event: KeyboardEvent): HistoryAction | undefined {
+	if (!(event.metaKey || event.ctrlKey) || event.altKey) return undefined;
+
+	const key = event.key.toLowerCase();
+
+	if (key === 'z') return event.shiftKey ? 'redo' : 'undo';
+	if (key === 'y' && event.ctrlKey && !event.shiftKey) return 'redo';
+
+	return undefined;
+}
+
+function travel(input: HTMLInputElement, action: HistoryAction) {
+	const target = action === 'undo' ? history.undo(snapshot()) : history.redo(snapshot());
+	if (!target) return;
+
+	text.value = target.text;
+	country.value = target.country;
+	internationalCode.value = target.internationalCode;
+	lastCaret = target.caret;
+
+	input.value = target.text;
+	input.setSelectionRange(target.caret, target.caret);
+
+	emitValue();
 }
 
 function onCountryChange(value: unknown) {
 	const parsed = CountryCodeSchema.safeParse(value);
 	if (!parsed.success) return;
 
+	const formatted = formatAsYouType(sanitize(text.value), parsed.data);
+	// Le pays choisi fait foi : un numéro international d'un autre pays est effacé, pas réinterprété.
+	const otherCountry = formatted.callingCode !== undefined && formatted.callingCode !== getCountryCallingCode(parsed.data);
+
+	history.record(snapshot());
+
 	country.value = parsed.data;
-	text.value = new AsYouType(parsed.data).input(text.value);
+	internationalCode.value = otherCountry ? undefined : formatted.callingCode;
+	text.value = otherCountry ? '' : formatted.text;
+	lastCaret = text.value.length;
 
 	emitValue();
 }
@@ -111,6 +284,10 @@ function emitValue() {
 	const next = input === '' ? null : (toE164(input, country.value) ?? input);
 
 	lastEmitted = next;
+
+	// Choisir un pays sur un champ vide ne doit pas marquer le formulaire comme modifié.
+	if (next === (props.value ?? null)) return;
+
 	emit('input', next);
 }
 </script>
@@ -126,6 +303,7 @@ function emitValue() {
 		@update:model-value="onCountryChange"
 	>
 		<template #preview="{ toggle, active }">
+			<!-- dir="ltr" : un numéro se lit de gauche à droite, même dans une interface RTL. -->
 			<v-input
 				:model-value="text"
 				:placeholder="placeholder"
@@ -133,10 +311,14 @@ function emitValue() {
 				:non-editable="nonEditable"
 				:active="active"
 				:class="{ invalid }"
+				:aria-invalid="invalid"
 				type="tel"
 				autocomplete="tel"
+				dir="ltr"
 				@beforeinput="onBeforeInput"
-				@update:model-value="onInput"
+				@input="onInput"
+				@compositionend="onInput"
+				@keydown="onKeydown"
 				@focus="touched = false"
 				@blur="touched = true"
 			>
@@ -146,12 +328,18 @@ function emitValue() {
 						class="country"
 						:class="{ active }"
 						:disabled="disabled || nonEditable"
+						:aria-label="countryLabel"
+						aria-haspopup="listbox"
+						:aria-expanded="active"
 						@click="toggle"
 					>
-						<span class="flag">{{ country ? flag(country) : '🌐' }}</span>
-						<span v-if="callingCode" class="calling-code">+{{ callingCode }}</span>
-						<v-icon v-if="!nonEditable" name="expand_more" small />
+						<span class="flag" aria-hidden="true">{{ shownCountry ? flag(shownCountry) : '🌐' }}</span>
+						<span v-if="callingCode" class="calling-code" aria-hidden="true">+{{ callingCode }}</span>
+						<v-icon v-if="!nonEditable" name="expand_more" small aria-hidden="true" />
 					</button>
+				</template>
+				<template v-if="invalid" #append>
+					<v-icon v-tooltip="t('invalidNumber', locale)" name="error" class="invalid-icon" />
 				</template>
 			</v-input>
 			<!-- Après le v-input : v-menu prend le premier élément du slot comme référence de positionnement. -->
@@ -164,6 +352,10 @@ function emitValue() {
 .v-input.invalid {
 	--v-input-border-color: var(--theme--danger);
 	--v-input-border-color-hover: var(--theme--danger);
+}
+
+.invalid-icon {
+	--v-icon-color: var(--theme--danger);
 }
 
 .country {

@@ -42,6 +42,11 @@
 				"type": "hook",
 				"name": "phone-hook",
 				"source": "src/phone-hook/index.ts"
+			},
+			{
+				"type": "endpoint",
+				"name": "phone-endpoint",
+				"source": "src/phone-endpoint/index.ts"
 			}
 		],
 		"host": "^12.0.0"
@@ -52,7 +57,8 @@
 		"link": "directus-extension link",
 		"validate": "directus-extension validate",
 		"add": "directus-extension add",
-		"type-check": "tsc --noEmit"
+		"type-check": "vue-tsc --noEmit",
+		"test": "vitest run"
 	},
 	"devDependencies": {
 		"@directus/extensions-sdk": "18.0.5",
@@ -60,7 +66,11 @@
 		"@directus/validation": "^3.0.5",
 		"country-flag-emoji-polyfill": "^0.1.10",
 		"libphonenumber-js": "^1.13.14",
-		"typescript": "^7.0.2",
+		"typescript": "^6.0.3",
+		"vitest": "^5.0.2",
+		"vue": "^3.5.24",
+		"vue-i18n": "^11.4.12",
+		"vue-tsc": "^3.3.11",
 		"zod": "^4.6.5"
 	}
 }

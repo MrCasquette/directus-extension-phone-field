@@ -6,10 +6,10 @@ import { CountryCodeSchema, PHONE_INTERFACE_ID, toE164 } from '../shared/phone';
 
 type Knex = EventContext['database'];
 
-// Écriture acceptée : chaîne internationale (dont E.164) ou { country, number }.
+// Écriture acceptée : chaîne internationale (dont E.164) ou { country, number } — code pays insensible à la casse.
 const PhoneWriteSchema = z.union([
 	z.string(),
-	z.object({ country: CountryCodeSchema, number: z.string() }),
+	z.object({ country: z.string().toUpperCase().pipe(CountryCodeSchema), number: z.string() }),
 ]);
 
 // Seul texte libre que l'outil `schema` du MCP Directus transmet : indique le format attendu aux agents.
@@ -49,7 +49,7 @@ async function normalizePhoneFields(payload: unknown, meta: Record<string, unkno
 	if (!record.success) return payload;
 
 	const { collection } = EventMetaSchema.parse(meta);
-	const phoneFields = (await fetchPhoneFields(database, collection)).filter((field) => field in record.data);
+	const phoneFields = (await fetchPhoneFields(database, collection)).filter((field) => Object.hasOwn(record.data, field));
 
 	if (phoneFields.length === 0) return payload;
 
@@ -59,7 +59,12 @@ async function normalizePhoneFields(payload: unknown, meta: Record<string, unkno
 	for (const field of phoneFields) {
 		const value = normalized[field];
 
-		// La nullabilité reste gérée par la validation native du champ.
+		// Chaîne vide = champ vidé. La nullabilité reste gérée par la validation native du champ.
+		if (typeof value === 'string' && value.trim() === '') {
+			normalized[field] = null;
+			continue;
+		}
+
 		if (value === null) continue;
 
 		const e164 = parsePhoneWrite(value);
@@ -90,19 +95,29 @@ async function addDefaultNote(payload: unknown, meta: Record<string, unknown>, d
 
 	const fieldMeta = parsed.data.meta;
 
-	// Une note fournie par l'admin, même vide, n'est jamais écrasée.
-	if (fieldMeta?.interface !== PHONE_INTERFACE_ID || 'note' in fieldMeta) return payload;
+	// Une note fournie par l'admin, même vide, n'est jamais écrasée ; sans changement d'interface, rien à faire.
+	if (!fieldMeta || 'note' in fieldMeta || fieldMeta.interface === undefined) return payload;
 
 	const { collection } = EventMetaSchema.parse(meta);
+	const note = await fetchFieldNote(database, collection, parsed.data.field);
 
-	if (await fetchFieldNote(database, collection, parsed.data.field)) return payload;
+	if (fieldMeta.interface === PHONE_INTERFACE_ID) {
+		return note ? payload : { ...parsed.data, meta: { ...fieldMeta, note: FIELD_NOTE } };
+	}
 
-	return { ...parsed.data, meta: { ...fieldMeta, note: FIELD_NOTE } };
+	// Passage à une autre interface : on retire notre note par défaut, jamais celle de l'admin.
+	return note === FIELD_NOTE ? { ...parsed.data, meta: { ...fieldMeta, note: null } } : payload;
 }
 
+// Les collections système auxquelles on peut ajouter des champs émettent leur propre scope (`users.create`…), pas `items.*`.
+const ITEM_SCOPES = ['items', 'users', 'files'];
+
 export default defineHook(({ filter }) => {
-	filter('items.create', (payload, meta, { database }) => normalizePhoneFields(payload, meta, database));
-	filter('items.update', (payload, meta, { database }) => normalizePhoneFields(payload, meta, database));
+	for (const scope of ITEM_SCOPES) {
+		filter(`${scope}.create`, (payload, meta, { database }) => normalizePhoneFields(payload, meta, database));
+		filter(`${scope}.update`, (payload, meta, { database }) => normalizePhoneFields(payload, meta, database));
+	}
+
 	filter('fields.create', (payload, meta, { database }) => addDefaultNote(payload, meta, database));
 	filter('fields.update', (payload, meta, { database }) => addDefaultNote(payload, meta, database));
 });
