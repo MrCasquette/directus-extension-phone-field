@@ -3,6 +3,7 @@ import parsePhoneNumber, {
 	type CountryCode,
 	getCountryCallingCode,
 	getExampleNumber,
+	type PhoneNumber,
 	validatePhoneNumberLength,
 } from 'libphonenumber-js/max';
 import examples from 'libphonenumber-js/mobile/examples';
@@ -49,7 +50,8 @@ const country = ref<CountryCode>();
 // Indicatif d'une saisie internationale (+44…) : prime sur le pays pour l'affichage du sélecteur.
 const internationalCode = ref<string>();
 const text = ref('');
-const touched = ref(false);
+// Édition (focus, frappe) : bouton d'appel désactivé. Validation (Entrée, sortie du champ) : forme canonique, bouton actif.
+const editing = ref(false);
 let lastEmitted: string | null | undefined;
 let lastCaret = 0;
 
@@ -77,9 +79,12 @@ const countryLabel = computed(() => {
 
 const placeholder = computed(() => (country.value ? getExampleNumber(country.value, examples)?.formatNational() : undefined));
 
-const invalid = computed(
-	() => touched.value && text.value.trim() !== '' && toE164(text.value, country.value) === undefined,
-);
+const e164 = computed(() => toE164(text.value, country.value));
+
+// Pas d'appel pendant l'édition : un numéro valide en cours de correction peut être faux.
+const callUri = computed(() => (!editing.value && e164.value ? `tel:${e164.value}` : undefined));
+
+const invalid = computed(() => !editing.value && text.value.trim() !== '' && e164.value === undefined);
 
 const countryItems = computed(() => {
 	const all = countryOptions(locale.value);
@@ -104,8 +109,31 @@ function syncFromValue(value: string | null) {
 
 	country.value = phone?.country ?? defaultCountry.value;
 	internationalCode.value = phone && !phone.country ? phone.countryCallingCode : undefined;
-	text.value = phone ? (phone.country ? phone.formatNational() : phone.formatInternational()) : (value ?? '');
+	text.value = phone ? canonicalText(phone) : (value ?? '');
 	lastCaret = text.value.length;
+}
+
+// Forme canonique : nationale pour un pays connu (`06 12 34 56 78`), internationale sinon (+800…).
+function canonicalText(phone: PhoneNumber): string {
+	return phone.country ? phone.formatNational() : phone.formatInternational();
+}
+
+function validate() {
+	editing.value = false;
+
+	const phone = e164.value ? parsePhoneNumber(e164.value) : undefined;
+	if (!phone) return;
+
+	const canonical = canonicalText(phone);
+
+	if (canonical === text.value) return;
+
+	history.record(snapshot());
+
+	country.value = phone.country ?? country.value;
+	internationalCode.value = phone.country ? undefined : phone.countryCallingCode;
+	text.value = canonical;
+	lastCaret = canonical.length;
 }
 
 function snapshot(): Snapshot {
@@ -195,6 +223,7 @@ function applyInput(input: HTMLInputElement, raw: string, significantBeforeCaret
 
 	if (formatted.text !== text.value) history.record(snapshot());
 
+	editing.value = true;
 	lastCaret = caret;
 	text.value = formatted.text;
 	input.value = formatted.text;
@@ -211,6 +240,12 @@ function applyInput(input: HTMLInputElement, raw: string, significantBeforeCaret
 
 function onKeydown(event: KeyboardEvent) {
 	if (!(event.target instanceof HTMLInputElement)) return;
+
+	if (event.key === 'Enter') {
+		event.preventDefault();
+		validate();
+		return;
+	}
 
 	// Toujours intercepté, même sans rien à annuler : sinon le raccourci remonte au navigateur (Arc rouvre un onglet).
 	const action = historyAction(event);
@@ -249,6 +284,7 @@ function travel(input: HTMLInputElement, action: HistoryAction) {
 	const target = action === 'undo' ? history.undo(snapshot()) : history.redo(snapshot());
 	if (!target) return;
 
+	editing.value = true;
 	text.value = target.text;
 	country.value = target.country;
 	internationalCode.value = target.internationalCode;
@@ -310,7 +346,7 @@ function emitValue() {
 				:disabled="disabled"
 				:non-editable="nonEditable"
 				:active="active"
-				:class="{ invalid }"
+				:class="{ 'phone-invalid': invalid }"
 				:aria-invalid="invalid"
 				type="tel"
 				autocomplete="tel"
@@ -319,8 +355,8 @@ function emitValue() {
 				@input="onInput"
 				@compositionend="onInput"
 				@keydown="onKeydown"
-				@focus="touched = false"
-				@blur="touched = true"
+				@focus="editing = true"
+				@blur="validate"
 			>
 				<template #prepend>
 					<button
@@ -338,8 +374,23 @@ function emitValue() {
 						<v-icon v-if="!nonEditable" name="expand_more" small aria-hidden="true" />
 					</button>
 				</template>
-				<template v-if="invalid" #append>
-					<v-icon v-tooltip="t('invalidNumber', locale)" name="error" class="invalid-icon" />
+				<template #append>
+					<v-icon v-if="invalid" v-tooltip="t('invalidNumber', locale)" name="error" class="invalid-icon" />
+					<!-- Sans href, le lien est inerte et hors du parcours clavier : état désactivé. -->
+					<a
+						v-else
+						class="call"
+						:class="{ disabled: !callUri }"
+						:href="callUri"
+						:aria-label="`${t('call', locale)} ${text}`"
+						:aria-disabled="!callUri"
+					>
+						<svg viewBox="0 -960 960 960" aria-hidden="true">
+							<path
+								d="M798-120q-125 0-247-54.5T329-329Q229-429 174.5-551T120-798q0-18 12-30t30-12h162q14 0 25 9.5t13 22.5l26 140q2 16-1 27t-11 19l-97 98q20 37 47.5 71.5T387-386q31 31 65 57.5t72 48.5l94-94q9-9 23.5-13.5T670-390l138 28q14 4 23 14.5t9 23.5v162q0 18-12 30t-30 12Z"
+							/>
+						</svg>
+					</a>
 				</template>
 			</v-input>
 			<!-- Après le v-input : v-menu prend le premier élément du slot comme référence de positionnement. -->
@@ -349,13 +400,47 @@ function emitValue() {
 </template>
 
 <style scoped>
-.v-input.invalid {
+/* Pas `.invalid` : classe interne de v-input, que Directus barre. */
+.v-input.phone-invalid {
 	--v-input-border-color: var(--theme--danger);
 	--v-input-border-color-hover: var(--theme--danger);
 }
 
 .invalid-icon {
 	--v-icon-color: var(--theme--danger);
+}
+
+.call {
+	display: inline-flex;
+	flex-shrink: 0;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	color: var(--foreground-inverted);
+	background-color: var(--theme--primary);
+	border-radius: 4px;
+	transition: opacity var(--fast) var(--transition);
+}
+
+.call:hover:not(.disabled) {
+	opacity: 0.85;
+}
+
+.call.disabled {
+	background-color: var(--theme--foreground-subdued);
+	cursor: not-allowed;
+}
+
+.call:focus-visible {
+	outline: 2px solid var(--theme--primary);
+	outline-offset: 2px;
+}
+
+.call svg {
+	width: 18px;
+	height: 18px;
+	fill: currentColor;
 }
 
 .country {

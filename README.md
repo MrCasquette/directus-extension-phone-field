@@ -2,6 +2,8 @@
 
 Phone number field for Directus: country selector, as-you-type formatting, E.164 storage and server-side validation.
 
+<img src="https://raw.githubusercontent.com/MrCasquette/directus-extension-phone-field/main/docs/screenshots/list.png" alt="Contacts list showing phone numbers with country flags" width="720">
+
 Built on [libphonenumber-js](https://gitlab.com/catamphetamine/libphonenumber-js) (`max` metadata: numbers are validated against real number ranges per country, not just their length).
 
 ## Features
@@ -18,8 +20,18 @@ This bundle ships four extensions that work together.
 - Picking a country clears an international number from another country.
 - Undo / redo (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`, `Ctrl+Y`) handled by the field itself.
 - Input longer than the country's maximum length is rejected.
-- Invalid numbers are highlighted once the field loses focus.
+- Invalid numbers are highlighted once validated.
+- Pressing `Enter` or leaving the field validates the number and rewrites it in its canonical national format (`6 12 34 56 78` → `06 12 34 56 78`).
+- A call button (`tel:` link) is enabled once a valid number has been validated, and disabled again while editing.
 - Stores the number in [E.164](https://en.wikipedia.org/wiki/E.164) format (`+33612345678`).
+
+| Typing — call button disabled | `Enter` — canonical format, call button enabled |
+| --- | --- |
+| <img src="https://raw.githubusercontent.com/MrCasquette/directus-extension-phone-field/main/docs/screenshots/editing.png" alt="Number being typed, call button disabled" width="360"> | <img src="https://raw.githubusercontent.com/MrCasquette/directus-extension-phone-field/main/docs/screenshots/validated.png" alt="Validated number in national format, call button enabled" width="360"> |
+| **International input — country detected** | **Invalid number** |
+| <img src="https://raw.githubusercontent.com/MrCasquette/directus-extension-phone-field/main/docs/screenshots/international.png" alt="International number switching the selector to the United Kingdom" width="360"> | <img src="https://raw.githubusercontent.com/MrCasquette/directus-extension-phone-field/main/docs/screenshots/invalid.png" alt="Invalid number with an error icon and tooltip" width="360"> |
+
+<img src="https://raw.githubusercontent.com/MrCasquette/directus-extension-phone-field/main/docs/screenshots/country-selector.png" alt="Country selector with search and preferred countries first" width="360">
 
 Options:
 
@@ -30,7 +42,7 @@ Options:
 
 ### Display — `Phone`
 
-Shows the number with its country flag, followed by a small call button (`tel:` link).
+Shows the number with its country flag.
 
 | Option | Description                                                        |
 | ------ | ------------------------------------------------------------------ |
